@@ -1,0 +1,1096 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Modern MapDisplay with Mapbox</title>
+
+  <!-- Mapbox GL JS CSS -->
+  <link
+    href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css"
+    rel="stylesheet"
+  />
+
+  <style>
+    /* Reset margins/padding */
+    html, body, #map {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      width: 100%;
+    }
+
+    /* Control panel styling */
+    #control-panel {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      width: 260px;
+      background: rgba(255, 255, 255, 0.95);
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      z-index: 10;
+      overflow: hidden;
+    }
+
+    #control-panel h2 {
+      margin: 0;
+      background-color: #2c3e50;
+      color: #ecf0f1;
+      font-size: 16px;
+      padding: 10px 12px;
+    }
+
+    #control-panel .panel-body {
+      padding: 12px;
+      font-size: 14px;
+    }
+
+    #control-panel label {
+      display: block;
+      margin-top: 8px;
+      font-size: 13px;
+      color: #333;
+    }
+
+    #control-panel input[type="text"],
+    #control-panel input[type="number"],
+    #control-panel input[type="color"] {
+      width: 100%;
+      padding: 6px 8px;
+      margin-top: 4px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 14px;
+      box-sizing: border-box;
+    }
+
+    #control-panel button {
+      margin-top: 12px;
+      width: 100%;
+      padding: 8px;
+      background-color: #3498db;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    #control-panel button:hover {
+      background-color: #2980b9;
+    }
+
+    /* Popup styling overrides */
+    .mapboxgl-popup-content {
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      font-size: 13px;
+    }
+
+    /* Custom marker styles injected via JS */
+    .ship-marker {
+      border: 2px solid white;
+      border-radius: 50%;
+      box-shadow: 0 0 6px rgba(0, 0, 0, 0.3);
+    }
+    .camera-triangle {
+      width: 0;
+      height: 0;
+      border-left: 12px solid transparent;
+      border-right: 12px solid transparent;
+      border-bottom: 20px solid black;
+    }
+    .camera-triangle.green {
+      border-bottom-color: #2ecc71 !important;
+    }
+
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <!-- Control panel HTML -->
+  <div id="control-panel">
+    <h2>MapDisplay Controls</h2>
+    <div class="panel-body">
+      <!-- Add Ship Form -->
+      <strong>Add New Ship</strong>
+      <label for="ship-name">Name</label>
+      <input type="text" id="ship-name" placeholder="e.g. Alpha" />
+
+      <label for="ship-color">Color</label>
+      <input type="color" id="ship-color" value="#e67e22" />
+
+      <label for="ship-size">Base Size (px)</label>
+      <input type="number" id="ship-size" value="12" min="4" max="50" />
+
+      <label for="ship-lat">Latitude</label>
+      <input type="number" id="ship-lat" value="54.5" step="0.0001" />
+
+      <label for="ship-lon">Longitude</label>
+      <input type="number" id="ship-lon" value="18.5" step="0.0001" />
+
+      <label for="ship-type">Type (optional)</label>
+      <input type="text" id="ship-type" placeholder="Cargo / Tanker ..." />
+
+      <button id="btn-add-ship">Add Ship</button>
+
+      <hr style="margin: 12px 0;" />
+
+      <!-- Add Camera Form -->
+      <strong>Add New Camera</strong>
+      <label for="cam-lat">Latitude</label>
+      <input type="number" id="cam-lat" value="54.6" step="0.0001" />
+
+      <label for="cam-lon">Longitude</label>
+      <input type="number" id="cam-lon" value="19.0" step="0.0001" />
+
+      <label for="cam-range">Detection Range (km)</label>
+      <input type="number" id="cam-range" value="15" min="1" max="100" />
+
+      <button id="btn-add-camera">Add Camera</button>
+    </div>
+  </div>
+
+  <!-- Mapbox GL JS -->
+  <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+
+  <script>
+    // ——————————————————————————————————————————
+    // 1) Initialize Mapbox Map
+    // ——————————————————————————————————————————
+    mapboxgl.accessToken = "YOUR_MAPBOX_ACCESS_TOKEN";
+    const map = new mapboxgl.Map({
+      container: "map",
+      style: "mapbox://styles/mapbox/streets-v11",
+      center: [19.0, 54.5], // [longitude, latitude]
+      zoom: 7,
+    });
+
+    // Wait until map is loaded
+    map.on("load", () => {
+      // Add empty GeoJSON sources for ships, traces, saved-points, and cameras
+      map.addSource("ships", {
+        type: "geojson",
+        data: {
+          type: "FeatureCollection",
+          features: [], // filled dynamically
+        },
+      });
+      map.addSource("ship-traces", {
+        type: "geojson",
+        data: {
+          type: "FeatureCollection",
+          features: [],
+        },
+      });
+      map.addSource("ship-saves", {
+        type: "geojson",
+        data: {
+          type: "FeatureCollection",
+          features: [],
+        },
+      });
+      map.addSource("cameras", {
+        type: "geojson",
+        data: {
+          type: "FeatureCollection",
+          features: [],
+        },
+      });
+
+      // Add a circle layer for ships (dynamic radius and opacity)
+      map.addLayer({
+        id: "ship-circles",
+        type: "circle",
+        source: "ships",
+        paint: {
+          "circle-color": ["get", "color"],
+          "circle-radius": ["get", "radius"],
+          "circle-opacity": ["get", "opacity"],
+          "circle-stroke-color": "#fff",
+          "circle-stroke-width": 1,
+        },
+      });
+
+      // Add a symbol layer for ship labels
+      map.addLayer({
+        id: "ship-labels",
+        type: "symbol",
+        source: "ships",
+        layout: {
+          "text-field": ["get", "label"],
+          "text-size": 12,
+          "text-offset": [0, 1.2],
+          "text-anchor": "top",
+        },
+        paint: {
+          "text-color": ["get", "color"],
+          "text-halo-color": "#ffffff",
+          "text-halo-width": 1,
+        },
+      });
+
+      // Add a line layer for ship traces (dashed)
+      map.addLayer({
+        id: "ship-traces-line",
+        type: "line",
+        source: "ship-traces",
+        paint: {
+          "line-color": ["get", "color"],
+          "line-width": 2,
+          "line-opacity": 0.6,
+          "line-dasharray": [2, 4],
+        },
+      });
+
+      // Add a circle layer for saved positions (gray)
+      map.addLayer({
+        id: "ship-saves-layer",
+        type: "circle",
+        source: "ship-saves",
+        paint: {
+          "circle-color": "#7f8c8d",
+          "circle-radius": 4,
+          "circle-opacity": 0.8,
+          "circle-stroke-color": "#ecf0f1",
+          "circle-stroke-width": 1,
+        },
+      });
+
+      // Add a symbol layer for saved labels
+      map.addLayer({
+        id: "ship-saves-labels",
+        type: "symbol",
+        source: "ship-saves",
+        layout: {
+          "text-field": ["get", "save_label"],
+          "text-size": 10,
+          "text-offset": [0, 1.5],
+          "text-anchor": "top",
+        },
+        paint: {
+          "text-color": "#7f8c8d",
+        },
+      });
+
+      // Add a custom HTML marker for each camera (triangle) via a GeoJSON source
+      // we will create a Layer of "cameras" as a symbol with an HTML marker
+      map.loadImage(
+        // a tiny transparent placeholder to use as a sprite for cameras
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAE0lEQVR4nGP4DwQMDAwMDBAA9gAGwv+P6YwAAAABJRU5ErkJggg==",
+        (error, image) => {
+          if (error) throw error;
+          map.addImage("transparent-pixel", image);
+          map.addLayer({
+            id: "camera-symbol",
+            type: "symbol",
+            source: "cameras",
+            layout: {
+              "icon-image": "transparent-pixel",
+              "icon-size": 1,
+            },
+          });
+        }
+      );
+    });
+
+    // ——————————————————————————————————————————
+    // 2) Utility Functions
+    // ——————————————————————————————————————————
+    function toGeoJSON_Point(lon, lat, properties = {}) {
+      return {
+        type: "Feature",
+        geometry: {
+          type: "Point",
+          coordinates: [lon, lat],
+        },
+        properties,
+      };
+    }
+
+    function toGeoJSON_Line(coordinates, properties = {}) {
+      return {
+        type: "Feature",
+        geometry: {
+          type: "LineString",
+          coordinates, // array of [lon, lat]
+        },
+        properties,
+      };
+    }
+
+    // Haversine distance in meters between two [lon, lat] points
+    function haversineDistance(coord1, coord2) {
+      const toRad = (deg) => (deg * Math.PI) / 180;
+      const [lon1, lat1] = coord1;
+      const [lon2, lat2] = coord2;
+      const R = 6371000; // Earth radius in meters
+      const φ1 = toRad(lat1),
+        φ2 = toRad(lat2);
+      const Δφ = toRad(lat2 - lat1);
+      const Δλ = toRad(lon2 - lon1);
+      const a =
+        Math.sin(Δφ / 2) ** 2 +
+        Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return R * c;
+    }
+
+    // Destination point given [lon, lat], bearing (deg), distance (m)
+    function destinationPoint(lon, lat, bearingDeg, distanceM) {
+      const R = 6371000; // m
+      const δ = distanceM / R;
+      const θ = (bearingDeg * Math.PI) / 180;
+      const φ1 = (lat * Math.PI) / 180;
+      const λ1 = (lon * Math.PI) / 180;
+
+      const sinφ2 =
+        Math.sin(φ1) * Math.cos(δ) + Math.cos(φ1) * Math.sin(δ) * Math.cos(θ);
+      const φ2 = Math.asin(sinφ2);
+      const y = Math.sin(θ) * Math.sin(δ) * Math.cos(φ1);
+      const x = Math.cos(δ) - Math.sin(φ1) * Math.sin(φ2);
+      const λ2 = λ1 + Math.atan2(y, x);
+
+      const newLat = (φ2 * 180) / Math.PI;
+      const newLon = ((λ2 * 180) / Math.PI + 540) % 360 - 180;
+      return [newLon, newLat];
+    }
+
+    // ——————————————————————————————————————————
+    // 3) ShipManager Class
+    // ——————————————————————————————————————————
+    class ShipManager {
+      constructor(map) {
+        this.map = map;
+        this.ships = {}; // name → shipData
+        // shipData structure:
+        // {
+        //   name: string,
+        //   color: "#rrggbb",
+        //   baseSizePx: number,
+        //   label: string,
+        //   customInfo: { ... },
+        //   sources: [ [lon, lat], ... ],
+        //   avgCoord: [lon, lat],
+        //   spread: number(m),
+        //   opacity: number(0–1),
+        //   traceCoords: [ [lon, lat], ... ],
+        //   showTrace: boolean,
+        //   highlight: boolean,
+        //   highlightRadius: number(m),
+        //   showDirection: boolean,
+        //   coneAngle: number(deg),
+        //   coneLength: number(m),
+        //   savePoints: [ { coord:[lon, lat], label: string }, ... ],
+        // }
+      }
+
+      addShip(opts) {
+        const {
+          name,
+          color = "#e74c3c",
+          baseSizePx = 12,
+          label = null,
+          initialCoord = [0, 0],
+          customInfo = {},
+        } = opts;
+
+        if (!name) {
+          console.warn("Ship must have a unique name.");
+          return;
+        }
+        // Initialize shipData
+        this.ships[name] = {
+          name,
+          color,
+          baseSizePx,
+          label: label || name,
+          customInfo: { ...customInfo },
+          sources: [], // user‐provided source coords
+          avgCoord: initialCoord.slice(),
+          spread: 0,
+          opacity: 1.0,
+          traceCoords: [initialCoord.slice()],
+          showTrace: true,
+          highlight: false,
+          highlightRadius: 5000, // default 5 km
+          showDirection: false,
+          coneAngle: 30,
+          coneLength: 20000, // 20 km
+          savePoints: [],
+        };
+        this._updateShipLayer();
+        return this.ships[name];
+      }
+
+      removeShip(name) {
+        delete this.ships[name];
+        this._updateShipLayer();
+        this._updateTraceLayer();
+        this._updateSaveLayer();
+      }
+
+      // Given an array of [lon, lat] from multiple sources:
+      updatePositionFromSources(name, sourceCoords) {
+        const ship = this.ships[name];
+        if (!ship || sourceCoords.length === 0) return;
+
+        // 1) Compute average
+        let sumLon = 0,
+          sumLat = 0;
+        sourceCoords.forEach((pt) => {
+          sumLon += pt[0];
+          sumLat += pt[1];
+        });
+        const avgLon = sumLon / sourceCoords.length;
+        const avgLat = sumLat / sourceCoords.length;
+        ship.avgCoord = [avgLon, avgLat];
+
+        // 2) Compute spread (max pairwise Haversine)
+        let maxDist = 0;
+        if (sourceCoords.length > 1) {
+          for (let i = 0; i < sourceCoords.length; i++) {
+            for (let j = i + 1; j < sourceCoords.length; j++) {
+              const d = haversineDistance(
+                sourceCoords[i],
+                sourceCoords[j]
+              );
+              if (d > maxDist) maxDist = d;
+            }
+          }
+        }
+        ship.spread = maxDist; // in meters
+
+        // 3) Compute new symbol radius:
+        //    baseSizePx + a factor based on spread (e.g. maxSpread=20000 m → +baseSizePx)
+        const spreadFactor = Math.min(maxDist / 20000, 1);
+        ship.radius = ship.baseSizePx * (1 + spreadFactor);
+
+        // 4) Compute opacity (less with more sources)
+        const maxSources = 10;
+        ship.opacity = Math.max(
+          0.2,
+          Math.min(1.0, 1.0 - sourceCoords.length / maxSources)
+        );
+
+        // 5) Update trace
+        ship.traceCoords.push([avgLon, avgLat]);
+
+        // 6) Save sources & info
+        ship.sources = sourceCoords.slice();
+        ship.customInfo["Sources"] = sourceCoords.length;
+
+        // Finally, re-render layers
+        this._updateShipLayer();
+        this._updateTraceLayer();
+      }
+
+      // Toggle trace on/off
+      setShipTrace(name, showTrace) {
+        if (!this.ships[name]) return;
+        this.ships[name].showTrace = showTrace;
+        this._updateTraceLayer();
+      }
+
+      // Toggle highlight on/off (just a circle at current position)
+      setShipHighlight(name, highlight, radiusMeters = null) {
+        if (!this.ships[name]) return;
+        this.ships[name].highlight = highlight;
+        if (radiusMeters !== null)
+          this.ships[name].highlightRadius = radiusMeters;
+        this._updateShipLayer(); // we’ll draw highlight via a separate GeoJSON feature
+      }
+
+      // Toggle direction cone
+      setShipDirection(name, showDirection, angleDeg = null, lengthMeters = null) {
+        if (!this.ships[name]) return;
+        this.ships[name].showDirection = showDirection;
+        if (angleDeg !== null) this.ships[name].coneAngle = angleDeg;
+        if (lengthMeters !== null) this.ships[name].coneLength = lengthMeters;
+        this._updateShipLayer(); // direction cone drawn in separate layer
+      }
+
+      // Save current position as a “manual save point”
+      saveShipPosition(name) {
+        const ship = this.ships[name];
+        if (!ship) return;
+        const saveLabel = `${name}‍—Point${ship.savePoints.length + 1}`;
+        ship.savePoints.push({
+          coord: ship.avgCoord.slice(),
+          label: saveLabel,
+        });
+        this._updateSaveLayer();
+      }
+
+      // Remove a saved point by label (optional helper)
+      removeSavePoint(name, label) {
+        const ship = this.ships[name];
+        if (!ship) return;
+        ship.savePoints = ship.savePoints.filter((pt) => pt.label !== label);
+        this._updateSaveLayer();
+      }
+
+      // Internal: Re-build the “ships” GeoJSON and push it to the map
+      _updateShipLayer() {
+        const features = [];
+
+        for (const [name, ship] of Object.entries(this.ships)) {
+          // Main circle
+          features.push(
+            toGeoJSON_Point(ship.avgCoord[0], ship.avgCoord[1], {
+              name: name,
+              color: ship.color,
+              radius: ship.radius,
+              opacity: ship.opacity,
+              label: ship.label,
+              showDirection: ship.showDirection ? 1 : 0,
+              coneAngle: ship.coneAngle,
+              coneLength: ship.coneLength,
+              highlight: ship.highlight ? 1 : 0,
+              highlightRadius: ship.highlightRadius,
+              customInfo: JSON.stringify(ship.customInfo),
+            })
+          );
+        }
+
+        // Update the “ships” source
+        map.getSource("ships").setData({
+          type: "FeatureCollection",
+          features: features,
+        });
+
+        // Also draw direction cones and highlight circles via separate layers:
+        // We'll remove any existing layers named "ship-cones" or "ship-highlights" and re-add them.
+        // But since Mapbox GL JS doesn’t support true “circle-of-radius-meters” out of the box,
+        // we'll draw highlights + cones as polygons in a helper GeoJSON source.
+
+        // Build a combined “overlay” GeoJSON with two sets of features:
+        //   (a) highlight circles as polygons (approximate with 64-point circle)
+        //   (b) cones as small triangle polygons
+
+        const overlayFeatures = [];
+
+        for (const [name, ship] of Object.entries(this.ships)) {
+          const [lon, lat] = ship.avgCoord;
+
+          // Draw highlight circle if enabled
+          if (ship.highlight) {
+            const pts = [];
+            const numSegments = 64;
+            const R = ship.highlightRadius; // in meters
+            for (let i = 0; i < numSegments; i++) {
+              const theta = (i / numSegments) * Math.PI * 2;
+              const [px, py] = destinationPoint(
+                lon,
+                lat,
+                (theta * 180) / Math.PI,
+                R
+              );
+              pts.push([px, py]);
+            }
+            pts.push(pts[0]); // close ring
+            overlayFeatures.push({
+              type: "Feature",
+              geometry: {
+                type: "Polygon",
+                coordinates: [pts],
+              },
+              properties: {
+                type: "highlight",
+                color: "#e74c3c",
+              },
+            });
+          }
+
+          // Draw direction cone if enabled and we have at least 2 trace points
+          if (ship.showDirection && ship.traceCoords.length >= 2) {
+            const l = ship.traceCoords.length;
+            const prev = ship.traceCoords[l - 2];
+            const current = ship.avgCoord;
+            // Compute heading from prev → current
+            const dx = current[0] - prev[0];
+            const dy = current[1] - prev[1];
+            if (dx !== 0 || dy !== 0) {
+              const headingRad = Math.atan2(dy, dx);
+              const headingDeg = (headingRad * 180) / Math.PI;
+              const halfAngleDeg = ship.coneAngle / 2;
+              // Two edge bearings:
+              const leftBearing = headingDeg - halfAngleDeg;
+              const rightBearing = headingDeg + halfAngleDeg;
+
+              const [x1, y1] = destinationPoint(
+                lon,
+                lat,
+                leftBearing,
+                ship.coneLength
+              );
+              const [x2, y2] = destinationPoint(
+                lon,
+                lat,
+                rightBearing,
+                ship.coneLength
+              );
+              // triangle = [current, edge1, edge2, current]
+              overlayFeatures.push({
+                type: "Feature",
+                geometry: {
+                  type: "Polygon",
+                  coordinates: [
+                    [
+                      [lon, lat],
+                      [x1, y1],
+                      [x2, y2],
+                      [lon, lat],
+                    ],
+                  ],
+                },
+                properties: {
+                  type: "cone",
+                  color: ship.color,
+                },
+              });
+            }
+          }
+        }
+
+        // Remove old overlay sources/layers if they exist
+        if (map.getSource("ship-overlays")) {
+          map.removeLayer("ship-highlights");
+          map.removeLayer("ship-cones");
+          map.removeSource("ship-overlays");
+        }
+
+        // Add a new source with overlay features
+        map.addSource("ship-overlays", {
+          type: "geojson",
+          data: {
+            type: "FeatureCollection",
+            features: overlayFeatures,
+          },
+        });
+
+        // Layer for highlights (polygon outlines)
+        map.addLayer({
+          id: "ship-highlights",
+          type: "fill",
+          source: "ship-overlays",
+          filter: ["==", ["get", "type"], "highlight"],
+          paint: {
+            "fill-color": ["get", "color"],
+            "fill-opacity": 0.1,
+          },
+        });
+
+        // Layer for direction cones
+        map.addLayer({
+          id: "ship-cones",
+          type: "fill",
+          source: "ship-overlays",
+          filter: ["==", ["get", "type"], "cone"],
+          paint: {
+            "fill-color": ["get", "color"],
+            "fill-opacity": 0.2,
+          },
+        });
+      }
+
+      // Internal: Re-build “ship-traces” GeoJSON
+      _updateTraceLayer() {
+        const features = [];
+        for (const [name, ship] of Object.entries(this.ships)) {
+          if (ship.showTrace && ship.traceCoords.length > 1) {
+            features.push(
+              toGeoJSON_Line(ship.traceCoords, {
+                color: ship.color,
+              })
+            );
+          }
+        }
+        map.getSource("ship-traces").setData({
+          type: "FeatureCollection",
+          features,
+        });
+      }
+
+      // Internal: Re-build “ship-saves” GeoJSON
+      _updateSaveLayer() {
+        const features = [];
+        for (const [name, ship] of Object.entries(this.ships)) {
+          for (const sp of ship.savePoints) {
+            features.push(
+              toGeoJSON_Point(sp.coord[0], sp.coord[1], {
+                save_label: sp.label,
+              })
+            );
+          }
+        }
+        map.getSource("ship-saves").setData({
+          type: "FeatureCollection",
+          features,
+        });
+      }
+
+      // Build a combined GeoJSON for popups (ships only)
+      _buildPopupOnClick(e) {
+        const features = map.queryRenderedFeatures(e.point, {
+          layers: ["ship-circles"],
+        });
+        if (!features.length) return null;
+        return features[0];
+      }
+
+      // Attach popup handlers
+      enablePopups() {
+        map.on("click", (e) => {
+          const feature = this._buildPopupOnClick(e);
+          if (!feature) return;
+          const props = feature.properties;
+          const name = props.name;
+          const ship = this.ships[name];
+          if (!ship) return;
+          // Build HTML content
+          let html = `<strong>${ship.label}</strong><br/>`;
+          for (const [k, v] of Object.entries(ship.customInfo)) {
+            html += `<em>${k}:</em> ${v}<br/>`;
+          }
+          html += `<em>Sources:</em> ${ship.sources.length}<br/>`;
+          new mapboxgl.Popup({ offset: [0, -12] })
+            .setLngLat(feature.geometry.coordinates)
+            .setHTML(html)
+            .addTo(map);
+        });
+
+        // Clicking on empty map hides popup
+        map.on("click", (e) => {
+          const f = map.queryRenderedFeatures(e.point, {
+            layers: ["ship-circles", "camera-symbol"],
+          });
+          if (!f.length) {
+            // close all popups
+            const popups = document.getElementsByClassName(
+              "mapboxgl-popup"
+            );
+            for (const p of popups) {
+              p.remove();
+            }
+          }
+        });
+      }
+    }
+
+    // ——————————————————————————————————————————
+    // 4) CameraManager Class
+    // ——————————————————————————————————————————
+    class CameraManager {
+      constructor(map, shipManager) {
+        this.map = map;
+        this.shipManager = shipManager;
+        this.cameras = {}; // name → { coord: [lon, lat], range: m }
+      }
+
+      addCamera(opts) {
+        const { name, coord = [0, 0], rangeKm = 10 } = opts;
+        if (!name) {
+          console.warn("Camera must have a unique name.");
+          return;
+        }
+        this.cameras[name] = {
+          name,
+          coord: coord.slice(),
+          range: rangeKm * 1000, // convert to meters
+        };
+        this._updateCameraLayer();
+      }
+
+      removeCamera(name) {
+        delete this.cameras[name];
+        this._updateCameraLayer();
+      }
+
+      setCameraPosition(name, coord) {
+        if (this.cameras[name]) {
+          this.cameras[name].coord = coord.slice();
+          this._updateCameraLayer();
+        }
+      }
+
+      setCameraRange(name, rangeKm) {
+        if (this.cameras[name]) {
+          this.cameras[name].range = rangeKm * 1000;
+          this._updateCameraLayer();
+        }
+      }
+
+      // Every time ships move or cameras update, call this to recolor and re-render
+      _updateCameraLayer() {
+        const features = [];
+
+        for (const [name, cam] of Object.entries(this.cameras)) {
+          // Determine if any ship is in range
+          let inRange = false;
+          for (const ship of Object.values(this.shipManager.ships)) {
+            const d = haversineDistance(cam.coord, ship.avgCoord);
+            if (d <= cam.range) {
+              inRange = true;
+              break;
+            }
+          }
+
+          // Build a GeoJSON point with property “status”: “ok” or “alert”
+          features.push(
+            toGeoJSON_Point(cam.coord[0], cam.coord[1], {
+              name: name,
+              status: inRange ? "alert" : "ok",
+              range: cam.range,
+            })
+          );
+        }
+
+        // Update the source
+        map.getSource("cameras").setData({
+          type: "FeatureCollection",
+          features,
+        });
+
+        // Then, for each camera feature, we’ll place a custom HTML marker
+        // (Mapbox GL JS doesn’t do “triangle” natively). So we first remove all existing markers:
+        const existingMarkers = document.getElementsByClassName(
+          "camera-marker"
+        );
+        while (existingMarkers[0]) {
+          existingMarkers[0].parentNode.removeChild(
+            existingMarkers[0]
+          );
+        }
+
+        // Now re-add custom markers at each camera coordinate
+        for (const feat of features) {
+          const el = document.createElement("div");
+          el.className = "camera-marker";
+          const status = feat.properties.status;
+          const triangle = document.createElement("div");
+          triangle.className = "camera-triangle";
+          if (status === "alert") triangle.classList.add("green");
+          el.appendChild(triangle);
+
+          new mapboxgl.Marker(el)
+            .setLngLat(feat.geometry.coordinates)
+            .addTo(map);
+
+          // Add a transparent circle around the camera to visualize detection range (optional)
+          const circleId = `camera-range-${feat.properties.name}`;
+          // Remove existing layer if present
+          if (map.getLayer(circleId)) {
+            map.removeLayer(circleId);
+            map.removeSource(circleId);
+          }
+          // Add a new layer showing a circle at the camera’s location
+          const circleGeoJSON = {
+            type: "FeatureCollection",
+            features: [
+              {
+                type: "Feature",
+                geometry: {
+                  type: "Point",
+                  coordinates: feat.geometry.coordinates,
+                },
+              },
+            ],
+          };
+
+          map.addSource(circleId, {
+            type: "geojson",
+            data: circleGeoJSON,
+          });
+          map.addLayer({
+            id: circleId,
+            type: "circle",
+            source: circleId,
+            paint: {
+              "circle-radius": {
+                stops: [
+                  [0, 0],
+                  [20, cam.range / 1.2], // approximate on‐screen pixels (works decently at zoom ~7–10)
+                ],
+                base: 2,
+              },
+              "circle-color": "#2ecc71",
+              "circle-opacity": 0.1,
+              "circle-stroke-width": 1,
+              "circle-stroke-color": "#27ae60",
+            },
+          });
+        }
+      }
+    }
+
+    // ——————————————————————————————————————————
+    // 5) Instantiate Managers & Wire Up Controls
+    // ——————————————————————————————————————————
+    const shipManager = new ShipManager(map);
+    const cameraManager = new CameraManager(map, shipManager);
+
+    // Enable popups for ships
+    map.on("load", () => {
+      shipManager.enablePopups();
+    });
+
+    // “Add Ship” button
+    document
+      .getElementById("btn-add-ship")
+      .addEventListener("click", () => {
+        const name = document.getElementById("ship-name").value.trim();
+        const color =
+          document.getElementById("ship-color").value || "#e67e22";
+        const baseSizePx = Number(
+          document.getElementById("ship-size").value
+        );
+        const lat = parseFloat(
+          document.getElementById("ship-lat").value
+        );
+        const lon = parseFloat(
+          document.getElementById("ship-lon").value
+        );
+        const type = document.getElementById("ship-type").value.trim();
+
+        if (!name || isNaN(lat) || isNaN(lon)) {
+          alert("Please give your ship a unique name and valid coordinates.");
+          return;
+        }
+
+        shipManager.addShip({
+          name,
+          color,
+          baseSizePx,
+          label: name,
+          initialCoord: [lon, lat],
+          customInfo: type ? { Type: type } : {},
+        });
+
+        // Clear form fields (except color/size)
+        document.getElementById("ship-name").value = "";
+        document.getElementById("ship-type").value = "";
+      });
+
+    // “Add Camera” button
+    document
+      .getElementById("btn-add-camera")
+      .addEventListener("click", () => {
+        const lat = parseFloat(
+          document.getElementById("cam-lat").value
+        );
+        const lon = parseFloat(
+          document.getElementById("cam-lon").value
+        );
+        const rangeKm = Number(
+          document.getElementById("cam-range").value
+        );
+        if (isNaN(lat) || isNaN(lon) || isNaN(rangeKm)) {
+          alert("Please enter valid camera coordinates and range.");
+          return;
+        }
+        const name = `Cam-${Object.keys(cameraManager.cameras).length +
+          1}`;
+        cameraManager.addCamera({
+          name,
+          coord: [lon, lat],
+          rangeKm,
+        });
+
+        // Clear only if desired:
+        // document.getElementById("cam-lat").value = "";
+        // document.getElementById("cam-lon").value = "";
+      });
+
+    // ——————————————————————————————————————————
+    // 6) Simulation (Mimic Your Python Loop)
+    // ——————————————————————————————————————————
+    // After a short delay (map fully loaded), create two ships: Alpha and Beta
+    map.on("load", () => {
+      // Add initial ships
+      shipManager.addShip({
+        name: "Alpha",
+        color: "#e67e22",
+        baseSizePx: 14,
+        label: "Alpha",
+        initialCoord: [18.5, 54.5],
+        customInfo: { Type: "Cargo" },
+      });
+      shipManager.addShip({
+        name: "Beta",
+        color: "#3498db",
+        baseSizePx: 14,
+        label: "Beta",
+        initialCoord: [18.8, 54.4],
+        customInfo: { Type: "Tanker" },
+      });
+
+      // Add two cameras
+      cameraManager.addCamera({
+        name: "Camera 1",
+        coord: [19.0, 54.6],
+        rangeKm: 15,
+      });
+      cameraManager.addCamera({
+        name: "Camera 2",
+        coord: [18.7, 54.7],
+        rangeKm: 15,
+      });
+
+      let step = 0;
+      const maxSteps = 40;
+      const interval = setInterval(() => {
+        if (step >= maxSteps) {
+          clearInterval(interval);
+          return;
+        }
+
+        // Alpha’s 3 sources moving northeast
+        const baseX = 18.5 + step * 0.01;
+        const baseY = 54.5 + step * 0.005;
+        const sourcesAlpha = [
+          [baseX, baseY],
+          [baseX + 0.003, baseY - 0.003],
+          [baseX - 0.002, baseY + 0.002],
+        ];
+        shipManager.updatePositionFromSources("Alpha", sourcesAlpha);
+
+        // Beta’s 2→8 sources
+        let sourcesBeta;
+        if (step < 10) {
+          const baseXB = 18.8 + step * 0.015;
+          sourcesBeta = [
+            [baseXB, 54.4],
+            [baseXB + 0.001, 54.4],
+          ];
+        } else {
+          const baseXB = 18.8 + step * 0.015;
+          sourcesBeta = [
+            [baseXB, 54.7],
+            [baseXB + 0.001, 54.8],
+            [baseXB + 0.001, 54.8],
+            [baseXB + 0.001, 54.8],
+            [baseXB + 0.001, 54.8],
+            [baseXB + 0.001, 54.8],
+            [baseXB + 0.001, 54.8],
+            [baseXB + 0.001, 54.8],
+          ];
+        }
+        shipManager.updatePositionFromSources("Beta", sourcesBeta);
+
+        // At midpoint, save positions
+        if (step === 5) {
+          shipManager.saveShipPosition("Alpha");
+          shipManager.saveShipPosition("Beta");
+        }
+
+        // Trigger camera update (proximity checks)
+        cameraManager._updateCameraLayer();
+
+        step++;
+      }, 300);
+    });
+  </script>
+</body>
+</html>
